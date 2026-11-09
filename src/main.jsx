@@ -119,33 +119,73 @@ function readStorage(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
 
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    credentials: 'include',
+    ...options,
+    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers ?? {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || 'Une erreur est survenue.');
+  return payload;
+}
+
 function App() {
   const [view, setView] = useState('home');
   const [auth, setAuth] = useState(null);
-  const [user, setUser] = useState(() => readStorage('kafil-user', null));
-  const [saved, setSaved] = useState(() => readStorage('kafil-saved', ['confidence']));
+  const [user, setUser] = useState(null);
+  const [saved, setSaved] = useState([]);
+  const [progressMap, setProgressMap] = useState({});
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState('Tout découvrir');
   const [mobileMenu, setMobileMenu] = useState(false);
 
-  useEffect(() => localStorage.setItem('kafil-user', JSON.stringify(user)), [user]);
-  useEffect(() => localStorage.setItem('kafil-saved', JSON.stringify(saved)), [saved]);
+  useEffect(() => {
+    api('/api/me').then((payload) => {
+      setUser(payload.user);
+      setSaved(payload.savedCourses ?? []);
+      setProgressMap(Object.fromEntries((payload.progress ?? []).map((item) => [item.courseId, item])));
+    }).catch(() => {});
+  }, []);
 
   const openCourse = (course) => { setSelectedCourse(course); setView('course'); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   const startLearning = (course) => { setSelectedCourse(course); setView('lesson'); window.scrollTo({ top: 0, behavior: 'smooth' }); };
-  const toggleSaved = (id) => setSaved((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
-  const login = (name = 'Yasmine') => { setUser((current) => ({ ...defaultUser, ...current, name })); setAuth(null); setView('dashboard'); };
+  const toggleSaved = async (id) => {
+    if (!user) { setAuth('login'); return; }
+    const nextSaved = !saved.includes(id);
+    try {
+      const payload = await api(`/api/courses/${id}/save`, { method: 'POST', body: JSON.stringify({ saved: nextSaved }) });
+      setSaved(payload.savedCourses ?? []);
+    } catch (error) { console.error(error); }
+  };
+  const login = async () => {
+    const payload = await api('/api/me');
+    setUser(payload.user);
+    setSaved(payload.savedCourses ?? []);
+    setProgressMap(Object.fromEntries((payload.progress ?? []).map((item) => [item.courseId, item])));
+    setAuth(null);
+    setView('dashboard');
+  };
+  const completeLesson = async (courseId, lessonId) => {
+    if (!user) { setAuth('login'); return false; }
+    try {
+      const payload = await api(`/api/courses/${courseId}/lessons/${lessonId}/complete`, { method: 'POST' });
+      setProgressMap((current) => ({ ...current, [courseId]: payload }));
+      return true;
+    } catch (error) { console.error(error); return false; }
+  };
+  const learnerCourses = useMemo(() => courses.map((course) => ({ ...course, progress: user ? (progressMap[course.id]?.progress ?? 0) : course.progress })), [user, progressMap]);
 
   return (
     <div className="app-shell">
       <Header view={view} setView={setView} user={user} setAuth={setAuth} mobileMenu={mobileMenu} setMobileMenu={setMobileMenu} />
       {view === 'home' && <Home setView={setView} setAuth={setAuth} openCourse={openCourse} />}
-      {view === 'dashboard' && <Dashboard user={user} courses={courses} saved={saved} setView={setView} openCourse={openCourse} startLearning={startLearning} />}
+      {view === 'dashboard' && <Dashboard user={user ?? defaultUser} courses={learnerCourses} saved={saved} setView={setView} openCourse={openCourse} startLearning={startLearning} />}
       {view === 'catalog' && <Catalog search={search} setSearch={setSearch} activeCategory={activeCategory} setActiveCategory={setActiveCategory} saved={saved} toggleSaved={toggleSaved} openCourse={openCourse} />}
       {view === 'course' && selectedCourse && <CourseDetail course={selectedCourse} saved={saved} toggleSaved={toggleSaved} setView={setView} startLearning={startLearning} />}
-      {view === 'lesson' && selectedCourse && <LessonView course={selectedCourse} setView={setView} setUser={setUser} />}
-      {view === 'profile' && <Profile user={user} saved={saved} setView={setView} />}
+      {view === 'lesson' && selectedCourse && <LessonView course={selectedCourse} setView={setView} onLessonComplete={completeLesson} />}
+      {view === 'profile' && <Profile user={user ?? defaultUser} saved={saved} setView={setView} />}
       {view === 'home' && <Footer setView={setView} />}
       {auth && <AuthModal mode={auth} setAuth={setAuth} login={login} />}
     </div>
@@ -199,7 +239,9 @@ function CourseCard({ course, openCourse, saved = [], toggleSaved }) {
 
 function Dashboard({ user, courses, saved, setView, openCourse, startLearning }) {
   const current = courses.find((course) => course.progress > 0) || courses[0];
-  return <main className="app-main section-wrap"><div className="dashboard-top"><div><span className="section-kicker">Lundi 9 novembre 2026</span><h1>Bonjour, {user.name} <span className="wave">✦</span></h1><p>Prête à faire un petit pas pour toi aujourd'hui ?</p></div><div className="streak-card"><span className="streak-flame"><Flame size={22} fill="currentColor" /></span><div><strong>{user.streak} jours</strong><small>de série active</small></div><ArrowUpRight size={16} /></div></div><div className="dashboard-grid"><section className="continue-panel"><div className="panel-heading"><div><span className="section-kicker">Reprendre là où tu en étais</span><h2>Ton parcours en cours</h2></div><button className="dots-button">•••</button></div><div className="continue-card"><div className="continue-image"><img src={current.image} alt="" /><button className="large-play" onClick={() => startLearning(current)}><Play size={19} fill="currentColor" /></button></div><div className="continue-info"><div className="card-meta"><span>{current.category}</span><span className="meta-dot">·</span><span>Étape 4 sur {current.lessons}</span></div><h3>{current.title}</h3><p>Le pouvoir des petits pas</p><div className="progress-label"><span>68% complété</span><span>4 / {current.lessons} leçons</span></div><div className="progress-track"><span style={{ width: `${current.progress}%` }} /></div><button className="button button-small" onClick={() => startLearning(current)}>Continuer la leçon <ArrowRight size={16} /></button></div></div></section><aside className="stats-panel"><div className="panel-heading"><div><span className="section-kicker">Cette semaine</span><h2>Mon énergie</h2></div><button className="dots-button">•••</button></div><div className="energy-number"><strong>184</strong><span>minutes apprises</span><div className="energy-trend"><ArrowUpRight size={14} /> 18%</div></div><div className="week-chart"><div className="chart-lines"><i /><i /><i /></div>{['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((day, index) => <div className="chart-day" key={`${day}-${index}`}><div className={`chart-bar bar-${index}`}><span /></div><small>{day}</small></div>)}</div><div className="goal-row"><span className="goal-badge"><Target size={15} /></span><div><strong>Objectif hebdomadaire</strong><small>3 h sur 4 h</small></div><div className="goal-ring">75%</div></div></aside></div><section className="dashboard-section"><div className="section-heading"><div><span className="section-kicker">Pour toi</span><h2>Continuer à explorer</h2></div><button className="link-button" onClick={() => setView('catalog')}>Voir tout <ArrowRight size={17} /></button></div><div className="course-grid">{courses.slice(1, 4).map((course) => <CourseCard key={course.id} course={course} openCourse={openCourse} saved={saved} />)}</div></section><section className="quote-banner"><div className="quote-bubble"><Sparkles size={20} /></div><div><strong>“Le meilleur investissement que tu puisses faire, c’est en toi-même.”</strong><span>— Une pensée pour aujourd'hui</span></div><button onClick={() => setView('catalog')}><ArrowUpRight size={18} /></button></section></main>;
+  const completedLessons = Math.floor(((current.progress ?? 0) / 100) * current.lessons);
+  const currentLesson = Math.min(completedLessons + 1, current.lessons);
+  return <main className="app-main section-wrap"><div className="dashboard-top"><div><span className="section-kicker">Lundi 9 novembre 2026</span><h1>Bonjour, {user.name} <span className="wave">✦</span></h1><p>Prête à faire un petit pas pour toi aujourd'hui ?</p></div><div className="streak-card"><span className="streak-flame"><Flame size={22} fill="currentColor" /></span><div><strong>{user.streak ?? 0} jours</strong><small>de série active</small></div><ArrowUpRight size={16} /></div></div><div className="dashboard-grid"><section className="continue-panel"><div className="panel-heading"><div><span className="section-kicker">Reprendre là où tu en étais</span><h2>Ton parcours en cours</h2></div><button className="dots-button">•••</button></div><div className="continue-card"><div className="continue-image"><img src={current.image} alt="" /><button className="large-play" onClick={() => startLearning(current)}><Play size={19} fill="currentColor" /></button></div><div className="continue-info"><div className="card-meta"><span>{current.category}</span><span className="meta-dot">·</span><span>Étape {currentLesson} sur {current.lessons}</span></div><h3>{current.title}</h3><p>Le pouvoir des petits pas</p><div className="progress-label"><span>{current.progress ?? 0}% complété</span><span>{completedLessons} / {current.lessons} leçons</span></div><div className="progress-track"><span style={{ width: `${current.progress ?? 0}%` }} /></div><button className="button button-small" onClick={() => startLearning(current)}>{current.progress ? 'Continuer la leçon' : 'Commencer la leçon'} <ArrowRight size={16} /></button></div></div></section><aside className="stats-panel"><div className="panel-heading"><div><span className="section-kicker">Cette semaine</span><h2>Mon énergie</h2></div><button className="dots-button">•••</button></div><div className="energy-number"><strong>184</strong><span>minutes apprises</span><div className="energy-trend"><ArrowUpRight size={14} /> 18%</div></div><div className="week-chart"><div className="chart-lines"><i /><i /><i /></div>{['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((day, index) => <div className="chart-day" key={`${day}-${index}`}><div className={`chart-bar bar-${index}`}><span /></div><small>{day}</small></div>)}</div><div className="goal-row"><span className="goal-badge"><Target size={15} /></span><div><strong>Objectif hebdomadaire</strong><small>3 h sur 4 h</small></div><div className="goal-ring">75%</div></div></aside></div><section className="dashboard-section"><div className="section-heading"><div><span className="section-kicker">Pour toi</span><h2>Continuer à explorer</h2></div><button className="link-button" onClick={() => setView('catalog')}>Voir tout <ArrowRight size={17} /></button></div><div className="course-grid">{courses.slice(1, 4).map((course) => <CourseCard key={course.id} course={course} openCourse={openCourse} saved={saved} />)}</div></section><section className="quote-banner"><div className="quote-bubble"><Sparkles size={20} /></div><div><strong>“Le meilleur investissement que tu puisses faire, c’est en toi-même.”</strong><span>— Une pensée pour aujourd'hui</span></div><button onClick={() => setView('catalog')}><ArrowUpRight size={18} /></button></section></main>;
 }
 
 function Catalog({ search, setSearch, activeCategory, setActiveCategory, saved, toggleSaved, openCourse }) {
@@ -212,22 +254,38 @@ function CourseDetail({ course, saved, toggleSaved, setView, startLearning }) {
   return <main className="course-detail"><div className="section-wrap breadcrumb"><button onClick={() => setView('catalog')}><ArrowLeft size={16} /> Explorer les parcours</button><span>/</span><span>{course.title}</span></div><section className="section-wrap detail-hero"><div className="detail-copy"><span className={`category-pill ${course.accent}`}>{course.category}</span><h1>{course.title}</h1><p>{course.description}</p><div className="teacher-line"><span className="teacher-avatar">{course.teacher.split(' ').map((name) => name[0]).join('').slice(0, 2)}</span><div><strong>Avec {course.teacher}</strong><small>{course.role}</small></div></div><div className="detail-stats"><span><Clock3 size={16} /> {course.duration}</span><span><BookOpen size={16} /> {course.lessons} leçons</span><span><Star size={16} fill="currentColor" /> {course.rating} <small>({course.students})</small></span></div><div className="detail-actions"><button className="button" onClick={() => startLearning(course)}><Play size={16} fill="currentColor" /> {course.progress ? 'Continuer le parcours' : 'Commencer le parcours'}</button><button className={`save-detail ${saved.includes(course.id) ? 'saved' : ''}`} onClick={() => toggleSaved(course.id)}><Bookmark size={17} fill={saved.includes(course.id) ? 'currentColor' : 'none'} /> {saved.includes(course.id) ? 'Enregistré' : 'Enregistrer'}</button></div></div><div className="detail-visual"><img src={course.image} alt="" /><div className="visual-overlay"><span>{course.lessons} étapes pour avancer</span><div className="detail-progress"><i style={{ width: `${course.progress}%` }} /></div><small>{course.progress}% complété</small></div></div></section><section className="section-wrap syllabus"><div className="syllabus-intro"><span className="section-kicker">Ce que tu vas découvrir</span><h2>Un parcours en {course.lessons} étapes</h2><p>Chaque leçon a été pensée pour être suivie en quelques minutes, avec une idée à retenir et une action simple à essayer.</p></div><div className="lesson-list">{course.lessonsList.map((lesson, index) => <div className={`lesson-row ${index < completedLessons ? 'done' : ''}`} key={lesson}><span className="lesson-number">{index < completedLessons ? <Check size={15} /> : String(index + 1).padStart(2, '0')}</span><div><strong>{lesson}</strong><small>{index === 0 ? 'Introduction · 8 min' : `Leçon ${index + 1} · ${index % 2 ? '12' : '9'} min`}</small></div><span className="lesson-status">{index < completedLessons ? 'Terminé' : index === completedLessons ? 'À suivre' : <LockKeyhole size={15} />}</span></div>)}</div></section></main>;
 }
 
-function LessonView({ course, setView, setUser }) {
+function LessonView({ course, setView, onLessonComplete }) {
   const [lessonIndex, setLessonIndex] = useState(Math.min(Math.floor((course.progress / 100) * course.lessons), course.lessonsList.length - 1));
   const [checked, setChecked] = useState(false);
   const lesson = course.lessonsList[lessonIndex];
-  const next = () => { setChecked(true); setUser((current) => ({ ...current, minutes: current.minutes + 9 })); if (lessonIndex < course.lessonsList.length - 1) setTimeout(() => { setLessonIndex((index) => index + 1); setChecked(false); }, 450); };
+  const next = async () => {
+    const completed = await onLessonComplete(course.id, lessonIndex + 1);
+    if (!completed) return;
+    setChecked(true);
+    if (lessonIndex < course.lessonsList.length - 1) setTimeout(() => { setLessonIndex((index) => index + 1); setChecked(false); }, 450);
+  };
   return <main className="lesson-view"><div className="lesson-topbar"><button onClick={() => setView('course')}><ArrowLeft size={17} /> Quitter la leçon</button><div className="lesson-progress-top"><span>Leçon {lessonIndex + 1} sur {course.lessons}</span><div><i style={{ width: `${((lessonIndex + 1) / course.lessons) * 100}%` }} /></div></div><button className="icon-button"><Bookmark size={17} /></button></div><div className="lesson-body"><aside className="lesson-sidebar"><span className="section-kicker">{course.category}</span><h2>{course.title}</h2><div className="lesson-sidebar-list">{course.lessonsList.map((item, index) => <button className={lessonIndex === index ? 'active' : index < lessonIndex ? 'completed' : ''} key={item} onClick={() => setLessonIndex(index)}><span>{index < lessonIndex ? <Check size={13} /> : index + 1}</span>{item}</button>)}</div><div className="need-help"><HeartHandshake size={18} /><strong>Besoin d'un coup de pouce ?</strong><span>Tu peux revenir ici quand tu veux.</span></div></aside><article className="lesson-content"><div className="lesson-label"><span className="play-dot"><Play size={12} fill="currentColor" /></span> À regarder · 09 min</div><h1>{lesson}</h1><p className="lesson-lead">Les grands changements commencent rarement par de grands gestes. Ils commencent par une décision minuscule : celle de faire un premier pas, aujourd'hui.</p><div className="video-placeholder"><img src={course.image} alt="" /><div className="video-shade" /><button className="video-play"><Play size={26} fill="currentColor" /></button><span className="video-duration">09:12</span></div><div className="lesson-note"><Sparkles size={18} /><div><strong>À retenir</strong><p>Tu n'as pas besoin d'avoir tout compris pour commencer. Choisis une action assez petite pour être impossible à repousser.</p></div></div><div className="lesson-footer"><button className={`button ${checked ? 'success-button' : ''}`} onClick={next}>{checked ? <><Check size={16} /> Bravo, c'est fait !</> : <>Marquer comme terminé <ArrowRight size={16} /></>}</button><span><Clock3 size={14} /> Ton progrès est sauvegardé automatiquement</span></div></article></div></main>;
 }
 
 function Profile({ user, saved, setView }) {
-  return <main className="app-main section-wrap profile-page"><div className="profile-header"><div className="profile-avatar-large">Y</div><div><span className="section-kicker">Mon espace</span><h1>{user.name} Benali</h1><p>Membre depuis novembre 2026 · Alger, Algérie</p></div><button className="button button-outline"><Settings size={16} /> Modifier mon profil</button></div><div className="profile-cards"><div className="profile-card"><Trophy size={21} /><strong>{user.completed}</strong><span>leçons terminées</span></div><div className="profile-card"><Flame size={21} /><strong>{user.streak} jours</strong><span>meilleure série</span></div><div className="profile-card"><Bookmark size={21} /><strong>{saved.length}</strong><span>parcours enregistrés</span></div></div><div className="profile-grid"><section className="profile-section"><div className="section-heading"><div><span className="section-kicker">Tes réussites</span><h2>Badges & étapes</h2></div></div><div className="badges"><div className="badge-item active"><span><Flame size={22} /></span><strong>Premier élan</strong><small>3 jours de suite</small></div><div className="badge-item active"><span><BookOpen size={22} /></span><strong>Curieux·se</strong><small>5 leçons suivies</small></div><div className="badge-item"><span><Crown size={22} /></span><strong>Régulier·e</strong><small>7 jours de suite</small></div></div></section><section className="profile-section saved-section"><div className="section-heading"><div><span className="section-kicker">Pour plus tard</span><h2>Mes parcours enregistrés</h2></div><button className="link-button" onClick={() => setView('catalog')}>Explorer <ArrowRight size={17} /></button></div><p>{saved.length} parcours à découvrir quand tu seras prête.</p></section></div></main>;
+  return <main className="app-main section-wrap profile-page"><div className="profile-header"><div className="profile-avatar-large">{user.name?.slice(0, 1).toUpperCase()}</div><div><span className="section-kicker">Mon espace</span><h1>{user.name}</h1><p>Membre depuis novembre 2026 · Alger, Algérie</p></div><button className="button button-outline"><Settings size={16} /> Modifier mon profil</button></div><div className="profile-cards"><div className="profile-card"><Trophy size={21} /><strong>{user.completed ?? 0}</strong><span>leçons terminées</span></div><div className="profile-card"><Flame size={21} /><strong>{user.streak ?? 0} jours</strong><span>meilleure série</span></div><div className="profile-card"><Bookmark size={21} /><strong>{saved.length}</strong><span>parcours enregistrés</span></div></div><div className="profile-grid"><section className="profile-section"><div className="section-heading"><div><span className="section-kicker">Tes réussites</span><h2>Badges & étapes</h2></div></div><div className="badges"><div className="badge-item active"><span><Flame size={22} /></span><strong>Premier élan</strong><small>3 jours de suite</small></div><div className="badge-item active"><span><BookOpen size={22} /></span><strong>Curieux·se</strong><small>5 leçons suivies</small></div><div className="badge-item"><span><Crown size={22} /></span><strong>Régulier·e</strong><small>7 jours de suite</small></div></div></section><section className="profile-section saved-section"><div className="section-heading"><div><span className="section-kicker">Pour plus tard</span><h2>Mes parcours enregistrés</h2></div><button className="link-button" onClick={() => setView('catalog')}>Explorer <ArrowRight size={17} /></button></div><p>{saved.length} parcours à découvrir quand tu seras prête.</p></section></div></main>;
 }
 
 function AuthModal({ mode, setAuth, login }) {
   const isSignup = mode === 'signup';
   const [name, setName] = useState('Yasmine');
-  return <div className="modal-backdrop" onMouseDown={() => setAuth(null)}><div className="auth-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setAuth(null)}><X size={18} /></button><div className="auth-brand"><span className="brand-mark"><span>k</span></span><span className="brand-name">kafil<span>academy</span></span></div><span className="section-kicker">{isSignup ? 'Bienvenue dans ton espace' : 'Content de te revoir'}</span><h2>{isSignup ? 'Commence par toi.' : 'On reprend ensemble ?'}</h2><p>{isSignup ? 'Crée ton compte en quelques secondes et commence à avancer à ton rythme.' : 'Connecte-toi pour retrouver tes parcours et tes progrès.'}</p>{isSignup && <label>Ton prénom<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex. Yasmine" /></label>}<label>Adresse e-mail<input type="email" placeholder="toi@exemple.com" /></label><label>Mot de passe<input type="password" placeholder="••••••••" /></label><button className="button auth-submit" onClick={() => login(name || 'Yasmine')}>{isSignup ? 'Créer mon compte' : 'Se connecter'} <ArrowRight size={17} /></button><div className="auth-divider"><span>ou continuer avec</span></div><button className="social-button" onClick={() => login(name || 'Yasmine')}><span className="google-dot">G</span> Google</button><small className="auth-switch">{isSignup ? 'Tu as déjà un compte ?' : 'Pas encore de compte ?'} <button onClick={() => setAuth(isSignup ? 'login' : 'signup')}>{isSignup ? 'Se connecter' : 'Créer mon compte'}</button></small></div></div>;
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    setBusy(true); setError('');
+    try {
+      await api(isSignup ? '/api/auth/sign-up/email' : '/api/auth/sign-in/email', { method: 'POST', body: JSON.stringify(isSignup ? { name: name.trim(), email: email.trim(), password } : { email: email.trim(), password }) });
+      await login();
+    } catch (submitError) { setError(submitError.message); } finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop" onMouseDown={() => setAuth(null)}><div className="auth-modal" onMouseDown={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setAuth(null)}><X size={18} /></button><div className="auth-brand"><span className="brand-mark"><span>k</span></span><span className="brand-name">kafil<span>academy</span></span></div><span className="section-kicker">{isSignup ? 'Bienvenue dans ton espace' : 'Content de te revoir'}</span><h2>{isSignup ? 'Commence par toi.' : 'On reprend ensemble ?'}</h2><p>{isSignup ? 'Crée ton compte en quelques secondes et commence à avancer à ton rythme.' : 'Connecte-toi pour retrouver tes parcours et tes progrès.'}</p>{isSignup && <label>Ton prénom<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Ex. Yasmine" /></label>}<label>Adresse e-mail<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="toi@exemple.com" /></label><label>Mot de passe<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="8 caractères minimum" /></label>{error && <p className="auth-error" role="alert">{error}</p>}<button className="button auth-submit" disabled={busy || !email || password.length < 8} onClick={submit}>{busy ? 'Connexion...' : isSignup ? 'Créer mon compte' : 'Se connecter'} <ArrowRight size={17} /></button><div className="auth-divider"><span>ou continuer avec</span></div><button className="social-button" disabled><span className="google-dot">G</span> Google bientôt disponible</button><small className="auth-switch">{isSignup ? 'Tu as déjà un compte ?' : 'Pas encore de compte ?'} <button onClick={() => setAuth(isSignup ? 'login' : 'signup')}>{isSignup ? 'Se connecter' : 'Créer mon compte'}</button></small></div></div>;
 }
 
 function Footer({ setView }) {
