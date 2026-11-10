@@ -48,6 +48,9 @@ try {
   assert.equal(completion.response.status, 200);
   assert.equal(completion.body.progress, 13);
 
+  const crossSiteMutation = await request('/api/courses/confidence/lessons/2/complete', { method: 'POST', headers: { Cookie: cookie, Origin: 'https://evil.example' } });
+  assert.equal(crossSiteMutation.response.status, 403);
+
   const forbidden = await request('/api/admin/overview', { headers: { Cookie: cookie } });
   assert.equal(forbidden.response.status, 403);
   console.log('API smoke test passed: signup, session, progress persistence, and role isolation.');

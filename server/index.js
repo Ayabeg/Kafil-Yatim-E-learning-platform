@@ -27,6 +27,17 @@ function setCorsHeaders(response, request) {
   }
 }
 
+function assertTrustedMutationOrigin(request) {
+  const origin = request.headers.origin;
+  if (!origin) return;
+  const localDevelopmentOrigin = process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+  if (!allowedOrigins.has(origin) && !localDevelopmentOrigin) {
+    const error = new Error('Untrusted origin');
+    error.status = 403;
+    throw error;
+  }
+}
+
 function readBody(request) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -96,6 +107,7 @@ async function handleApi(request, response, url) {
 
   const saveMatch = url.pathname.match(/^\/api\/courses\/([a-z-]+)\/save$/);
   if (saveMatch && request.method === 'POST') {
+    assertTrustedMutationOrigin(request);
     const course = findCourse(saveMatch[1]);
     if (!course) return json(response, { error: 'Course not found' }, 404);
     const body = request.bodyText ? JSON.parse(request.bodyText) : {};
@@ -106,6 +118,7 @@ async function handleApi(request, response, url) {
 
   const lessonMatch = url.pathname.match(/^\/api\/courses\/([a-z-]+)\/lessons\/(\d+)\/complete$/);
   if (lessonMatch && request.method === 'POST') {
+    assertTrustedMutationOrigin(request);
     const course = findCourse(lessonMatch[1]);
     const lessonId = Number(lessonMatch[2]);
     if (!course || lessonId < 1 || lessonId > course.lessons) return json(response, { error: 'Lesson not found' }, 404);
